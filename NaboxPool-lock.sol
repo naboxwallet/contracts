@@ -757,7 +757,6 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         }
         //池子里合约账户上实际余额
         uint256 realBalance = pool.candyToken.balanceOf(address(this));
-
         if (_pendingReward >= realBalance && pool.candyBalance >= realBalance) {
             return realBalance;
         } else if(_pendingReward >= pool.candyBalance && realBalance >= pool.candyBalance){
@@ -901,7 +900,6 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         uint128 deleteHeaderLength = 0;
         uint256 currentNumber = block.number;
         
-
         Queue storage queue = user.lockedRewardQueue;
         uint length = queue.end - queue.start;
         if (length > 0) {
@@ -923,11 +921,17 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
                     unlockReward = unlockReward.add(info.amount);
                 }
             }
-        
+
             // 已解锁的直接转账给用户
             if (unlockReward > 0) {
-                uint256 realTransfer = safeTokenTransfer(pool.candyToken, msg.sender, unlockReward, pool.candyBalance);
-                pool.candyBalance = pool.candyBalance.sub(realTransfer);
+                uint256 transferAmount = unlockReward;
+                uint256 bal = pool.candyToken.balanceOf(address(this)); 
+                if (transferAmount >= bal) {
+                    transferAmount = bal;
+                }
+                if (transferAmount > 0) {
+                    pool.candyToken.safeTransfer(msg.sender, transferAmount);
+                }
                 // 更新用户锁定数量
                 user.lockedReward = user.lockedReward.sub(unlockReward);
             }
@@ -935,11 +939,9 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
             if (deleteHeaderLength > 0) {
                 // 删除头部元素
                 user.lockedRewardQueue.start = user.lockedRewardQueue.start + deleteHeaderLength;
-                // for (uint i = 0; i < deleteHeaderLength; i++) {
-                //     removeFirst(queue);
-                // }
             }
         }
+        
         // 添加用户当前的锁定奖励
         uint256 pending = 0;
         uint256 _pendingReward = user.amount.mul(pool.accPerShare).div(1e12).sub(user.rewardDebt);
@@ -981,6 +983,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
                     revert("Pending lock error");
                 }
             }
+            pool.candyBalance = pool.candyBalance.sub(pending);
         }
     }
 
