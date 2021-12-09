@@ -729,16 +729,42 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
     // View function to see pending token on frontend.
     function pendingToken(uint256 _pid, address _user) external view returns (uint256) {
         require(_pid < poolInfo.length, "invalid pool id");
+        UserInfo memory user = userInfo[_pid][_user];
+        uint256 _pendingReward =  calcPendingReward(_pid, _user);
+        return _pendingReward.add(user.lockedReward);
+    }
+
+    function pendingReward(uint256 _pid, address _user) external view returns (uint256) {
+        require(_pid < poolInfo.length, "invalid pool id");
+        uint256 _pendingReward =  calcPendingReward(_pid, _user);
+        return _pendingReward;
+    }
+
+    // View function to see pending reward on frontend.
+    function calcPendingReward(uint256 _pid, address _user) internal view returns (uint256) {
         PoolInfo memory pool = poolInfo[_pid];
         UserInfo memory user = userInfo[_pid][_user];
+
         uint256 lpSupply = pool.lpSupply;
         uint256 accPerShare = pool.accPerShare;
         if (block.number > pool.lastRewardBlock && lpSupply != 0) {
             uint256 reward = (block.number.sub(pool.lastRewardBlock)).mul(pool.candyPerBlock);
             accPerShare = accPerShare.add(reward.mul(1e12).div(lpSupply));   // 此处乘以1e12，在下面会除以1e12
         }
-        uint256 pendingReward = user.amount.mul(accPerShare).div(1e12).sub(user.rewardDebt);
-        return pendingReward.add(user.lockedReward);
+        uint256 _pendingReward = user.amount.mul(accPerShare).div(1e12).sub(user.rewardDebt);
+        if (_pendingReward == 0) {
+            return 0;
+        }
+        //池子里合约账户上实际余额
+        uint256 realBalance = pool.candyToken.balanceOf(address(this));
+
+        if (_pendingReward >= realBalance && pool.candyBalance >= realBalance) {
+            return realBalance;
+        } else if(_pendingReward >= pool.candyBalance && realBalance >= pool.candyBalance){
+            return pool.candyBalance;
+        }
+   
+        return _pendingReward;
     }
 
     // Update reward vairables for all pools. Be careful of gas spending!
@@ -866,7 +892,6 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         }else {
             _receiveWithLockPool(pool, user);
         }
-        
     }
 
     //锁定的池子获取奖励
@@ -916,8 +941,20 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
             }
         }
         // 添加用户当前的锁定奖励
-        uint256 pending = user.amount.mul(pool.accPerShare).div(1e12).sub(user.rewardDebt);
-        
+        uint256 pending = 0;
+        uint256 _pendingReward = user.amount.mul(pool.accPerShare).div(1e12).sub(user.rewardDebt);
+        if (_pendingReward > 0) {
+             //池子里合约账户上实际余额
+            uint256 realBalance = pool.candyToken.balanceOf(address(this));
+            if (_pendingReward >= realBalance && pool.candyBalance >= realBalance) {
+                pending = realBalance;
+            } else if(_pendingReward >= pool.candyBalance && realBalance >= pool.candyBalance){
+                pending = pool.candyBalance;
+            } else {
+                pending = _pendingReward;
+            }
+        }
+      
         if (pending > 0) {
             user.lockedReward = user.lockedReward.add(pending); // 用户总锁定
             uint256 _unlockNumber = currentNumber.add(pool.totalBlockCount).div(pool.dayBlockCount).mul(pool.dayBlockCount); // 解锁高度
@@ -1017,14 +1054,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         UserInfo storage user = userInfo[_pid][_user];
         //==0时，没有锁定金额，全部返回
         if(pool.lockDays == 0) {
-            uint256 lpSupply = pool.lpSupply;
-            uint256 accPerShare = pool.accPerShare;
-            if (block.number > pool.lastRewardBlock && lpSupply != 0) {
-                uint256 reward = (block.number.sub(pool.lastRewardBlock)).mul(pool.candyPerBlock);
-                accPerShare = accPerShare.add(reward.mul(1e12).div(lpSupply));   // 此处乘以1e12，在下面会除以1e12
-            }
-            uint256 pendingReward = user.amount.mul(accPerShare).div(1e12).sub(user.rewardDebt);
-            return pendingReward;
+           return calcPendingReward(_pid, _user);
         }
 
         // 计算用户已解锁的数量
