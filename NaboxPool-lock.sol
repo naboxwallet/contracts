@@ -104,6 +104,8 @@ interface IERC20 {
      */
     function balanceOf(address account) external view returns (uint256);
 
+    function decimals() external view returns (uint8);
+
     /**
      * @dev Moves `amount` tokens from the caller's account to `recipient`.
      *
@@ -656,6 +658,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         uint256 candyPerBlock; 
         uint256 lpSupply;
         uint256 candyBalance;
+        uint256 le12;               //奖励糖果时的计算精度，默认12位
     }
 
     // Info of each pool.
@@ -688,6 +691,12 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
            _totalBlockCount = _minuteBlockCount * 60 * 24 * _lockDays;  //锁定天数内的总区块数量
         }
 
+        uint _le12 = 1e12;
+        if(_lpToken.decimals() > _candyToken.decimals()  ) {
+            uint sub = _lpToken.decimals() - _candyToken.decimals();
+            _le12 = _le12 * (10 ** sub);
+        }
+
         poolInfo.push(PoolInfo({
             lockDays: _lockDays,
             dayBlockCount: _dayBlockCount,
@@ -699,7 +708,8 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
             lastRewardBlock: lastRewardBlock,
             candyBalance: _amount,
             accPerShare: 0,
-            lpSupply: 0
+            lpSupply: 0,
+            le12:_le12
         }));
 
         emit AddPool(msg.sender, address(_lpToken), address(_candyToken), _lockDays, _amount);
@@ -749,9 +759,9 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         uint256 accPerShare = pool.accPerShare;
         if (block.number > pool.lastRewardBlock && lpSupply != 0) {
             uint256 reward = (block.number.sub(pool.lastRewardBlock)).mul(pool.candyPerBlock);
-            accPerShare = accPerShare.add(reward.mul(1e12).div(lpSupply));   // 此处乘以1e12，在下面会除以1e12
+            accPerShare = accPerShare.add(reward.mul(pool.le12).div(lpSupply));   // 此处乘以1e12，在下面会除以1e12
         }
-        uint256 _pendingReward = user.amount.mul(accPerShare).div(1e12).sub(user.rewardDebt);
+        uint256 _pendingReward = user.amount.mul(accPerShare).div(pool.le12).sub(user.rewardDebt);
         if (_pendingReward == 0) {
             return 0;
         }
@@ -789,7 +799,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         }
         
         uint256 reward = (block.number.sub(pool.lastRewardBlock)).mul(pool.candyPerBlock);
-        pool.accPerShare = pool.accPerShare.add(reward.mul(1e12).div(lpSupply)); 
+        pool.accPerShare = pool.accPerShare.add(reward.mul(pool.le12).div(lpSupply)); 
         pool.lastRewardBlock = block.number;
     }
 
@@ -814,7 +824,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         }
         user.amount = user.amount.add(_amount);
         pool.lpSupply = pool.lpSupply.add(_amount);
-        user.rewardDebt = user.amount.mul(pool.accPerShare).div(1e12);
+        user.rewardDebt = user.amount.mul(pool.accPerShare).div(pool.le12);
         emit Deposit(msg.sender, _pid, _amount);
     }
 
@@ -838,7 +848,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         _receive(pool, user);
         user.amount = user.amount.sub(_amount);
         pool.lpSupply = pool.lpSupply.sub(_amount);
-        user.rewardDebt = user.amount.mul(pool.accPerShare).div(1e12);
+        user.rewardDebt = user.amount.mul(pool.accPerShare).div(pool.le12);
         if (_amount > 0) {
             pool.lpToken.safeTransfer(address(msg.sender), _amount);
         }
@@ -883,7 +893,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         //pool.lockDays 为0时，没有锁定
         if(pool.lockDays == 0) {
             // 添加用户当前的锁定奖励
-            uint256 pending = user.amount.mul(pool.accPerShare).div(1e12).sub(user.rewardDebt);
+            uint256 pending = user.amount.mul(pool.accPerShare).div(pool.le12).sub(user.rewardDebt);
             if(pending > 0) {
                 uint256 realTransfer = safeTokenTransfer(pool.candyToken, msg.sender, pending, pool.candyBalance);
                 pool.candyBalance = pool.candyBalance.sub(realTransfer);
@@ -944,7 +954,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         
         // 添加用户当前的锁定奖励
         uint256 pending = 0;
-        uint256 _pendingReward = user.amount.mul(pool.accPerShare).div(1e12).sub(user.rewardDebt);
+        uint256 _pendingReward = user.amount.mul(pool.accPerShare).div(pool.le12).sub(user.rewardDebt);
         if (_pendingReward > 0) {
              //池子里合约账户上实际余额
             uint256 realBalance = pool.candyToken.balanceOf(address(this));
