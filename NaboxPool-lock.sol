@@ -567,7 +567,7 @@ contract Ownable is Context {
 
     /**
      * @dev Initializes the contract setting the deployer as the initial owner.
-     */ 
+     */
     constructor () internal {
         address msgSender = _msgSender();
         _owner = msgSender;
@@ -611,7 +611,7 @@ contract Ownable is Context {
         _owner = newOwner;
     }
 }
- 
+
 
 contract LockedNaboxPools is Ownable,ReentrancyGuard {
 
@@ -650,12 +650,13 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         uint16 lockDays;                 // reward locked days
         uint256 dayBlockCount;           // The number of blocks generated per day
         uint256 totalBlockCount;         // The total number of blocks generated during lock time
-        IERC20 lpToken;    
-        IERC20 candyToken; 
-        uint256 startBlock; 
+        IERC20 lpToken;
+        IERC20 candyToken;
+        uint256 startBlock;
+        uint256 endBlock;
         uint256 lastRewardBlock;  // Last block number that token distribution occurs.
         uint256 accPerShare;      // Accumulated token per share, times 1e12. See below.
-        uint256 candyPerBlock; 
+        uint256 candyPerBlock;
         uint256 lpSupply;
         uint256 candyBalance;
         uint256 le12;               //奖励糖果时的计算精度，默认12位
@@ -663,10 +664,10 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
 
     // Info of each pool.
     PoolInfo[] public poolInfo;
-    
+
     // Info of each user that stakes LP tokens.
-    mapping (uint256 => mapping (address => UserInfo)) userInfo; 
- 
+    mapping (uint256 => mapping (address => UserInfo)) userInfo;
+
     event AddPool(address indexed user, address lpToken, address candyToken, uint16 lockDays, uint256 candyBalance);
     event UpdateStartBlock(address indexed user, uint256 indexed pid, uint256 startBlock);
     event AddCandy(address indexed user, uint256 indexed pid, uint256 candyAmount, bool withUpdate);
@@ -677,12 +678,14 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
     // Add a new lp to the pool. Can only be called by the owner in the before starting, or the controller can call after starting.
     // XXX DO NOT add the same LP token more than once. Rewards will be messed up if you do.
     // _lockDays 矿池奖励锁定的天数，赋值0视为不锁定
-    function add(uint16 _lockDays, uint256 _minuteBlockCount, IERC20 _lpToken, IERC20 _candyToken, uint256 _candyPerBlock, uint256 _amount, uint256 _startBlock, bool _withUpdate) public onlyOwner {
+    function add(uint16 _lockDays, uint256 _minuteBlockCount, IERC20 _lpToken, IERC20 _candyToken, uint256 _candyPerBlock, uint256 _amount,
+                 uint256 _startBlock, bool _withUpdate) public onlyOwner {
+
+        require(_amount > 0, "add: amount not good");
         if (_withUpdate) {
             massUpdatePools();
         }
         uint256 lastRewardBlock = block.number > _startBlock ? block.number : _startBlock;
-        require(_amount > 0, "add: amount not good");
 
         uint256 _dayBlockCount = 0;
         uint256 _totalBlockCount = 0;
@@ -705,6 +708,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
             candyToken: _candyToken,
             candyPerBlock: _candyPerBlock,
             startBlock: _startBlock,
+            endBlock: _startBlock + _amount.div(_candyPerBlock),
             lastRewardBlock: lastRewardBlock,
             candyBalance: _amount,
             accPerShare: 0,
@@ -725,7 +729,15 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         }
         emit UpdateStartBlock(msg.sender, _pid, _startBlock);
     }
-    
+
+    function updateEndBlock(uint256 _pid,uint256 _endBlock) public onlyOwner {
+        require(_pid < poolInfo.length, "invalid pool id");
+        require(_endBlock < block.number, "invalid endBlockHeight");
+
+        PoolInfo storage pool = poolInfo[_pid];
+        pool.endBlock = _endBlock;
+    }
+
     function addCandy(uint256 _pid, uint256 _amount, bool _withUpdate) public onlyOwner {
         require(_pid < poolInfo.length, "invalid pool id");
         if (_withUpdate) {
@@ -735,7 +747,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         pool.candyBalance = pool.candyBalance.add(_amount);
         emit AddCandy(msg.sender, _pid, _amount, _withUpdate);
     }
-    
+
     // View function to see pending token on frontend.
     function pendingToken(uint256 _pid, address _user) external view returns (uint256) {
         require(_pid < poolInfo.length, "invalid pool id");
@@ -757,8 +769,10 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
 
         uint256 lpSupply = pool.lpSupply;
         uint256 accPerShare = pool.accPerShare;
+
         if (block.number > pool.lastRewardBlock && lpSupply != 0) {
-            uint256 reward = (block.number.sub(pool.lastRewardBlock)).mul(pool.candyPerBlock);
+            uint256 candyBlock = block.number < pool.endBlock ? block.number : pool.endBlock;
+            uint256 reward = (candyBlock.sub(pool.lastRewardBlock)).mul(pool.candyPerBlock);
             accPerShare = accPerShare.add(reward.mul(pool.le12).div(lpSupply));   // 此处乘以1e12，在下面会除以1e12
         }
         uint256 _pendingReward = user.amount.mul(accPerShare).div(pool.le12).sub(user.rewardDebt);
@@ -772,7 +786,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         } else if(_pendingReward >= pool.candyBalance && realBalance >= pool.candyBalance){
             return pool.candyBalance;
         }
-   
+
         return _pendingReward;
     }
 
@@ -790,26 +804,29 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         if (block.number <= pool.lastRewardBlock) {
             return;
         }
-        
+
         uint256 lpSupply = pool.lpSupply;
-        
+        uint256 _lastRewardBlock = block.number < pool.endBlock ? block.number : pool.endBlock;
         if (lpSupply == 0) {
-            pool.lastRewardBlock = block.number;
+            pool.lastRewardBlock = _lastRewardBlock;
             return;
         }
-        
-        uint256 reward = (block.number.sub(pool.lastRewardBlock)).mul(pool.candyPerBlock);
-        pool.accPerShare = pool.accPerShare.add(reward.mul(pool.le12).div(lpSupply)); 
-        pool.lastRewardBlock = block.number;
+        uint256 reward = (_lastRewardBlock.sub(pool.lastRewardBlock)).mul(pool.candyPerBlock);
+        pool.accPerShare = pool.accPerShare.add(reward.mul(pool.le12).div(lpSupply));
+        pool.lastRewardBlock = _lastRewardBlock;
     }
 
     function deposit(uint256 _pid, uint256 _amount) public {
         require(_pid < poolInfo.length, "invalid pool id");
+        PoolInfo storage pool = poolInfo[_pid];
+        require(!(block.number > pool.endBlock && _amount > 0), "pool stake is over");
         _deposit(_pid, _amount);
     }
 
     function depositDesc(uint256 _pid, uint256 _amount) public {
         require(_pid < poolInfo.length, "invalid pool id");
+        PoolInfo storage pool = poolInfo[_pid];
+        require(!(block.number > pool.endBlock && _amount > 0), "pool stake is over");
         _deposit(_pid, _amount);
     }
 
@@ -869,13 +886,13 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         user.lockedRewardQueue.start = user.lockedRewardQueue.end;
         user.lockedReward = 0;
     }
- 
+
     function safeTokenTransfer(IERC20 _token, address _to, uint256 _amount,uint256 _poolBalance) internal returns (uint256) {
         if (_amount == 0) {
             return 0;
         }
         uint256 transferAmount = _amount;
-        uint256 bal = _token.balanceOf(address(this)); 
+        uint256 bal = _token.balanceOf(address(this));
         if (transferAmount >= bal && _poolBalance >= bal) {
             transferAmount = bal;
         } else if(transferAmount >= _poolBalance && bal >= _poolBalance){
@@ -909,7 +926,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         uint256 unlockReward = 0;
         uint128 deleteHeaderLength = 0;
         uint256 currentNumber = block.number;
-        
+
         Queue storage queue = user.lockedRewardQueue;
         uint length = queue.end - queue.start;
         if (length > 0) {
@@ -927,7 +944,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
                         // 计算需要删除的头部长度
                         deleteHeaderLength = i - queue.start;
                         break;
-                    } 
+                    }
                     unlockReward = unlockReward.add(info.amount);
                 }
             }
@@ -935,7 +952,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
             // 已解锁的直接转账给用户
             if (unlockReward > 0) {
                 uint256 transferAmount = unlockReward;
-                uint256 bal = pool.candyToken.balanceOf(address(this)); 
+                uint256 bal = pool.candyToken.balanceOf(address(this));
                 if (transferAmount >= bal) {
                     transferAmount = bal;
                 }
@@ -951,7 +968,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
                 user.lockedRewardQueue.start = user.lockedRewardQueue.start + deleteHeaderLength;
             }
         }
-        
+
         // 添加用户当前的锁定奖励
         uint256 pending = 0;
         uint256 _pendingReward = user.amount.mul(pool.accPerShare).div(pool.le12).sub(user.rewardDebt);
@@ -966,7 +983,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
                 pending = _pendingReward;
             }
         }
-      
+
         if (pending > 0) {
             user.lockedReward = user.lockedReward.add(pending); // 用户总锁定
             uint256 _unlockNumber = currentNumber.add(pool.totalBlockCount).div(pool.dayBlockCount).mul(pool.dayBlockCount); // 解锁高度
@@ -1014,14 +1031,14 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
             _unlockNumbers[i] = info.unlockNumber;
         }
     }
-    
+
     // function getLockSize(uint256 _pid, address _user) external view returns (uint256) {
     //     UserInfo storage user = userInfo[_pid][_user];
     //     Queue storage queue = user.lockedRewardQueue;
     //     uint length = queue.end - queue.start;
     //     return length;
     // }
-    
+
     // 视图函数，查询用户锁定的金额
     function getLockByIndex(uint256 _pid, address _user, uint128 _index) external view returns (uint256 _amount, uint256 _unlockNumber) {
         require(_pid < poolInfo.length, "invalid pool id");
@@ -1040,7 +1057,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         LockedRewardInfo storage recently = queue.items[queue.start + _index];
         return (recently.amount, recently.unlockNumber);
     }
-    
+
     // 视图函数，查询用户最近锁定的金额
     function getRecentlyLock(uint256 _pid, address _user) external view returns (uint256 _amount, uint256 _unlockNumber) {
         require(_pid < poolInfo.length, "invalid pool id");
@@ -1085,10 +1102,10 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
                     info = queue.items[i];
                     if (info.unlockNumber > currentNumber) {
                         break;
-                    } 
+                    }
                     unlockReward = unlockReward.add(info.amount);
                 }
-            } 
+            }
         }
         return unlockReward;
     }
@@ -1099,7 +1116,7 @@ contract LockedNaboxPools is Ownable,ReentrancyGuard {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo memory user = userInfo[_pid][_user];
         if(pool.lockDays == 0) {
-            return (user.amount, user.rewardDebt, 0, 0);    
+            return (user.amount, user.rewardDebt, 0, 0);
         }
 
         return (user.amount, user.rewardDebt, user.lockedRewardQueue.end - user.lockedRewardQueue.start, user.lockedReward);
